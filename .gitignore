@@ -1,0 +1,88 @@
+# ======================
+# Python
+# ======================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Packaging / build
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
+
+# ======================
+# Node / React Frontend
+# ======================
+node_modules/
+frontend/node_modules/
+
+# Build outputs
+frontend/dist/
+frontend/build/
+
+# Env files
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+
+# Vite cache
+.vite/
+
+# ======================
+# Data / ML artifacts
+# ======================
+# Raw / processed data (if large or regeneratable)
+backend/data/*
+!backend/data/.gitkeep
+
+# Outputs (your current rule ✔)
+backend/outputs/
+
+# Model files
+*.pkl
+*.joblib
+*.h5
+*.pt
+*.pth
+
+# ======================
+# OS / System files
+# ======================
+.DS_Store
+Thumbs.db
+
+# ======================
+# IDE / Editor
+# ======================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ======================
+# Misc
+# ======================
+*.tmp
+*.bak
+*.cache
