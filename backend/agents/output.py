@@ -263,6 +263,9 @@ def _build_explainability_json(
     final_score: QualityScore,
     audit_log: list[dict],
     iterations_completed: int,
+    cleaned_profiles: list[dict] | None = None,
+    correlation_data: dict | None = None,
+    duplicate_count: int = 0,
 ) -> dict:
     """
     Build the structured payload the React frontend consumes.
@@ -293,6 +296,9 @@ def _build_explainability_json(
         "quality_history": [dict(qs) for qs in quality_history],
         "cleaning_plan": [dict(s) for s in cleaning_plan],
         "column_profiles": [dict(p) for p in initial_profile],
+        "cleaned_column_profiles": cleaned_profiles or [],
+        "correlation": correlation_data or {},
+        "duplicate_count": duplicate_count,
         "iteration_history": iteration_history,
     }
 
@@ -341,9 +347,13 @@ def run_output(state: PipelineState) -> dict[str, Any]:
         cleaning_plan: list[CleaningStep] = state.get("cleaning_plan") or []
         initial_profile: list[ColumnProfile] = state.get("profile") or []
         quality_history: list[QualityScore] = state.get("quality_history") or []
-        final_score: QualityScore = state.get("quality_score") or QualityScore(
-            overall=0.0, missing_score=0.0, outlier_score=0.0,
-            skewness_score=0.0, iteration=0, details={},
+        final_score: QualityScore = (
+            state.get("quality_score")
+            or (quality_history[-1] if quality_history else None)
+            or QualityScore(
+                overall=0.0, missing_score=0.0, outlier_score=0.0,
+                skewness_score=0.0, iteration=0, details={},
+            )
         )
         iteration: int = state.get("iteration", 0)
 
@@ -387,6 +397,54 @@ def run_output(state: PipelineState) -> dict[str, Any]:
         logger.info("Wrote audit report → %s", md_path)
 
         # --- 3. Explainability JSON -----------------------------------------
+        # Build post-cleaning column profiles for before/after histogram comparison
+        from agents.profiling_agent import _histogram_bins, _value_counts, _numeric_summary, _missing_pct, _outlier_ratio, _skewness, _unique_count, _cardinality_hint, _sample_values
+        cleaned_profiles = []
+        for col in df.columns:
+            s = df[col]
+            uc = _unique_count(s)
+            cleaned_profiles.append({
+                "column": col,
+                "dtype": str(s.dtype),
+                "missing_pct": _missing_pct(s),
+                "unique_count": uc,
+                "cardinality_hint": _cardinality_hint(s, uc),
+                "skewness": _skewness(s),
+                "outlier_ratio": _outlier_ratio(s),
+                "sample_values": _sample_values(s),
+                "numeric_summary": _numeric_summary(s),
+                "histogram": _histogram_bins(s),
+                "value_counts": _value_counts(s),
+            })
+
+        # Correlation matrix (numeric cols only, Pearson)
+        correlation_data = []
+        try:
+            num_df = df.select_dtypes(include='number')
+            if num_df.shape[1] >= 2:
+                corr = num_df.corr(method='pearson').round(4)
+                cols = list(corr.columns)
+                correlation_data = {
+                    "columns": cols,
+                    "matrix": [[round(float(v), 4) if not pd.isna(v) else None
+                                 for v in row] for row in corr.values],
+                }
+                # Top pairs (absolute value, exclude self-correlation)
+                pairs = []
+                for i in range(len(cols)):
+                    for j in range(i+1, len(cols)):
+                        v = corr.iloc[i, j]
+                        if pd.notna(v):
+                            pairs.append({"col_a": cols[i], "col_b": cols[j], "r": round(float(v), 4)})
+                pairs.sort(key=lambda x: abs(x["r"]), reverse=True)
+                correlation_data["top_pairs"] = pairs[:10]
+        except Exception as ce:
+            logger.warning("Correlation computation failed: %s", ce)
+            correlation_data = {}
+
+        # Duplicate row count
+        duplicate_count = int(df.duplicated().sum())
+
         json_path = out_dir / "explainability.json"
         explain_payload = _build_explainability_json(
             run_id=run_id,
@@ -399,6 +457,9 @@ def run_output(state: PipelineState) -> dict[str, Any]:
             final_score=final_score,
             audit_log=audit_log,
             iterations_completed=iteration,
+            cleaned_profiles=cleaned_profiles,
+            correlation_data=correlation_data,
+            duplicate_count=duplicate_count,
         )
         json_path.write_text(
             json.dumps(explain_payload, indent=2, default=str),

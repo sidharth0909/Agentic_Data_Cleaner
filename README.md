@@ -1,23 +1,39 @@
 # Agentic Data Cleaner
 
 A full-stack AI web application that cleans messy CSV files using a
-**multi-agent LangGraph pipeline** where a Decision Agent (Claude) reasons
+**multi-agent LangGraph pipeline** where a Decision Agent (Gemini) reasons
 context-aware transformations with per-column rationale, and a Validation
 Agent drives iterative quality improvement.
 
-**Live demo:** https://agentic-data-cleaner.vercel.app  
-**API:** https://agentic-data-cleaner-api.onrender.com/docs
+**Live demo:** 
+**API docs:** 
 
 ---
 
 ## Why this project
 
-Most data cleaning tools apply static rules blindly.  This project is different:
+Most data cleaning tools apply static rules blindly. This project is different:
 
-- **Explainability** — every transformation comes with a rationale written by Claude, not a terse code label
+- **Explainability** — every transformation has a rationale written by the LLM, not a terse code label
 - **Iterative agentic reasoning** — the pipeline loops up to 3× until a quality threshold is met
-- **Two modes** — LLM (Claude reasons the plan) with automatic fallback to a deterministic rules engine
-- **Full audit trail** — a Markdown report documents every decision, iteration, and quality score
+- **Human-in-the-loop** — users can override any agent decision before the pipeline runs
+- **Two modes** — LLM (Gemini reasons the plan) with automatic fallback to a deterministic rules engine
+- **Full audit trail** — Markdown report + explainability JSON document every decision, iteration, and quality score
+- **Rich analytics** — correlation heatmap, before/after distributions, ML readiness scoring, data lineage graph
+- **Run history** — all past runs saved locally; re-open, re-download, or share any run via URL
+
+---
+
+## What it produces
+
+For every CSV upload the pipeline outputs:
+
+| Artefact | Format | Contents |
+|---|---|---|
+| Cleaned dataset | `.csv` | Transformed, imputed, encoded data |
+| Cleaned dataset | `.parquet` | Same data in columnar format for analytics tools |
+| Audit report | `.md` | Per-column decisions, quality scores, execution log |
+| Explainability | `.json` | Full structured payload consumed by the UI |
 
 ---
 
@@ -28,23 +44,25 @@ Upload CSV
     │
     ▼
 ┌─────────────┐   FastAPI /api/run (SSE stream)
-│  Ingestion  │  dtype coercion, empty-row removal
+│  Ingestion  │   dtype coercion, empty-row removal
 └──────┬──────┘
        │
 ┌──────▼──────┐
-│  Profiling  │  missing_pct, outlier_ratio, skewness, cardinality
+│  Profiling  │   missing_pct, outlier_ratio, skewness, histogram bins,
+│             │   value_counts, cardinality, numeric_summary (Q1/Q3/median)
 └──────┬──────┘
        │
 ┌──────▼──────┐
-│  Decision   │  Claude (LLM) or rules engine → CleaningPlan
+│  Decision   │   Gemini (LLM) or rules engine → CleaningPlan
+│             │   User column_overrides applied on top
 └──────┬──────┘
        │
 ┌──────▼──────┐
-│  Execution  │  applies 16 actions (impute, encode, scale, transform…)
+│  Execution  │   16 action handlers (impute, encode, scale, transform…)
 └──────┬──────┘
        │
 ┌──────▼──────┐
-│ Validation  │  QualityScore = 0.5×missing + 0.3×outlier + 0.2×skewness
+│ Validation  │   QualityScore = 0.5×missing + 0.3×outlier + 0.2×skewness
 └──────┬──────┘
        │
   score ≥ threshold        score < threshold
@@ -53,9 +71,30 @@ Upload CSV
        │                    loop back to Decision
        ▼
 ┌──────────────┐
-│    Output    │  cleaned CSV + audit_report.md + explainability.json
+│    Output    │   cleaned CSV + Parquet + audit_report.md +
+│              │   explainability.json (with correlation matrix,
+│              │   before/after profiles, duplicate count)
 └──────────────┘
 ```
+
+---
+
+## Results dashboard
+
+After cleaning, the UI shows:
+
+| Tab | What you get |
+|---|---|
+| Overview | Shape before/after, quality sub-scores, column profiles table, AI dataset summary, downloads |
+| 📊 Data Viewer | Browse full cleaned CSV with column toggle, row search, pagination, filtered download |
+| 📉 Distributions | Before/after histogram overlay per numeric column; value-frequency bars for categoricals |
+| ⚠ Alerts | Ranked data quality issues (critical / warning / info) each linked to the agent's fix |
+| 🔍 Column Insights | Per-column card with missing bar, outlier bar, skewness gauge, action badge, ML readiness |
+| 🔗 Correlation | Pearson heatmap with hover tooltip; top-6 strongest pairs labelled Weak / Moderate / Strong |
+| 🎯 ML Readiness | Columns grouped into Ready / Review / High Risk / Dropped with per-issue tags |
+| 🔀 Data Lineage | Column → transformation arrow → output, colour-coded by action category |
+| Agent Reasoning | Grouped by action category (imputation, encoding, scaling…) with per-column rationale |
+| Iteration History | Quality score progression per iteration with missing / outlier / skewness breakdown |
 
 ---
 
@@ -65,11 +104,11 @@ Upload CSV
 |---|---|
 | Frontend | React 18 + Vite |
 | Backend | FastAPI + Uvicorn |
-| Orchestration | LangGraph |
-| LLM | Claude (`claude-opus-4-5`) via `langchain-anthropic` |
+| Orchestration | LangGraph 0.1 |
+| LLM | Gemini 2.0 Flash via `langchain-google-genai` |
 | Data | Pandas, NumPy |
 | ML utils | Scikit-learn |
-| Testing | pytest + httpx |
+| Testing | pytest + httpx + pytest-asyncio |
 | Deployment | Render (backend) + Vercel (frontend) |
 
 ---
@@ -79,17 +118,16 @@ Upload CSV
 ```
 agentic-data-cleaner/
 ├── backend/
-│   ├── main.py                  FastAPI app — /upload, /run (SSE), /results, /download
-│   ├── cli.py                   Command-line interface
+│   ├── main.py                  FastAPI app — all endpoints
 │   ├── requirements.txt
 │   ├── .env.example
 │   ├── agents/
 │   │   ├── ingestion.py         dtype coercion, validation
-│   │   ├── profiling_agent.py   per-column statistics
-│   │   ├── decision_agent.py    LLM + rules engine → CleaningPlan
-│   │   ├── execution_agent.py   applies 16 transformation handlers
+│   │   ├── profiling_agent.py   per-column stats + histograms + value_counts
+│   │   ├── decision_agent.py    LLM + rules engine + user overrides
+│   │   ├── execution_agent.py   16 transformation handlers
 │   │   ├── validation_agent.py  QualityScore, drives loop
-│   │   └── output.py            CSV + Markdown report + explainability JSON
+│   │   └── output.py            CSV + Parquet + Markdown + explainability JSON
 │   ├── pipeline/
 │   │   ├── state.py             PipelineState TypedDict
 │   │   └── graph.py             LangGraph graph + conditional edges
@@ -99,22 +137,24 @@ agentic-data-cleaner/
 │       └── output/              per-run artefacts
 ├── frontend/
 │   ├── src/
-│   │   ├── App.jsx
+│   │   ├── App.jsx              routing: upload / results / history / shared report
 │   │   ├── pages/
-│   │   │   ├── UploadPage.jsx   drag-drop + API key + run button
-│   │   │   └── ResultsPage.jsx  quality cards + reasoning tab + history tab
-│   │   └── api/client.js        axios + EventSource wrappers
+│   │   │   ├── UploadPage.jsx   drag-drop + mode selector + column overrides editor
+│   │   │   ├── ResultsPage.jsx  10-tab results dashboard
+│   │   │   ├── HistoryPage.jsx  localStorage run history
+│   │   │   └── SharedReportPage.jsx  public report viewer (/report/:run_id)
+│   │   └── api/client.js        axios + SSE stream wrappers
 │   ├── package.json
 │   ├── vite.config.js
 │   └── index.html
 ├── tests/
-│   ├── test_pipeline.py         Phase 2: ingestion + profiling
-│   ├── test_decision_agent.py   Phase 3: rules engine + mocked LLM
-│   ├── test_phase4.py           Phase 4: execution + validation + graph routing
-│   ├── test_output.py           Phase 5: report builders + run_output node
-│   └── test_api.py              Phase 6: FastAPI endpoints
-├── render.yaml                  Render deployment config
-├── vercel.json                  Vercel deployment config
+│   ├── test_pipeline.py
+│   ├── test_decision_agent.py
+│   ├── test_phase4.py
+│   ├── test_output.py
+│   └── test_api.py
+├── render.yaml
+├── vercel.json
 ├── Makefile
 └── README.md
 ```
@@ -127,55 +167,34 @@ agentic-data-cleaner/
 
 - Python 3.11+
 - Node.js 18+
-- An Anthropic API key (optional — rules mode works without one)
+- A Gemini API key — [get one free](https://aistudio.google.com/app/apikey) (optional — rules mode works without one)
 
 ### 1. Clone and install
 
 ```bash
 git clone https://github.com/your-username/agentic-data-cleaner.git
 cd agentic-data-cleaner
-make install          # pip install -r backend/requirements.txt && npm install (frontend)
+make install
 ```
 
 ### 2. Configure environment
 
 ```bash
 cp backend/.env.example backend/.env
-# Edit backend/.env and set ANTHROPIC_API_KEY=sk-ant-...
+# Set GEMINI_API_KEY=AIzaSy... in backend/.env (optional)
 ```
 
 ### 3. Run locally
 
 ```bash
-# Terminal 1 — backend
-make dev-backend      # uvicorn main:app --reload on :8000
+# Terminal 1
+make dev-backend      # uvicorn on :8000
 
-# Terminal 2 — frontend
-make dev-frontend     # vite dev server on :5173
+# Terminal 2
+make dev-frontend     # vite on :5173
 ```
 
-Open http://localhost:5173 in your browser.
-
----
-
-## CLI usage
-
-```bash
-# Rules mode (no API key required):
-python backend/cli.py backend/data/sample/titanic.csv
-
-# LLM mode:
-python backend/cli.py backend/data/sample/titanic.csv \
-    --mode llm --api-key $ANTHROPIC_API_KEY
-
-# Custom thresholds:
-python backend/cli.py backend/data/sample/house_prices.csv \
-    --mode llm --api-key $ANTHROPIC_API_KEY \
-    --max-iterations 5 --threshold 0.95
-
-# Quiet (JSON output only — useful for scripting):
-python backend/cli.py data.csv --quiet | jq .overall_score
-```
+Open http://localhost:5173.
 
 ---
 
@@ -183,14 +202,35 @@ python backend/cli.py data.csv --quiet | jq .overall_score
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/api/upload` | Upload CSV → returns `session_id` |
-| `POST` | `/api/run` | Run pipeline (SSE stream of progress events) |
-| `GET` | `/api/results/{run_id}` | Fetch explainability JSON |
-| `GET` | `/api/download/{run_id}/csv` | Download cleaned CSV |
-| `GET` | `/api/download/{run_id}/report` | Download Markdown audit report |
+| `POST` | `/api/upload` | Upload CSV → `session_id` |
+| `POST` | `/api/run` | Run pipeline (SSE stream) |
+| `GET` | `/api/results/{run_id}` | Full explainability JSON |
+| `GET` | `/api/download/{run_id}/csv` | Cleaned CSV |
+| `GET` | `/api/download/{run_id}/csv-dedup` | Deduplicated CSV |
+| `GET` | `/api/download/{run_id}/parquet` | Cleaned data as Parquet |
+| `GET` | `/api/download/{run_id}/report` | Markdown audit report |
+| `POST` | `/api/summary/{run_id}` | AI narrative summary (pass `{"api_key": "..."}`) |
 | `GET` | `/api/health` | Health check |
 
-Interactive docs: `http://localhost:8000/docs`
+Interactive docs: http://localhost:8000/docs
+
+### RunRequest body
+
+```json
+{
+  "session_id": "...",
+  "api_key": "AIzaSy...",
+  "mode": "llm",
+  "max_iterations": 3,
+  "quality_threshold": 0.90,
+  "column_overrides": {
+    "Age": "drop_column",
+    "Cabin": "keep"
+  }
+}
+```
+
+`column_overrides` is optional. Any action from the supported list can be specified per column — the agent's decision is replaced with the user's choice.
 
 ### SSE event types
 
@@ -200,40 +240,6 @@ event: progress   data: {"node": "profiling", "label": "Profiling columns…"}
 event: done       data: {"run_id": "...", "overall_score": 0.94, ...}
 event: error      data: {"detail": "..."}
 ```
-
----
-
-## Running tests
-
-```bash
-# All tests
-make test                       # pytest tests/ -v
-
-# Individual suites
-pytest tests/test_pipeline.py   # Phase 2
-pytest tests/test_decision_agent.py
-pytest tests/test_phase4.py
-pytest tests/test_output.py
-pytest tests/test_api.py        # requires: pip install httpx pytest-asyncio
-```
-
----
-
-## Deploying
-
-### Backend → Render
-
-1. Push to GitHub.
-2. Render → **New → Blueprint** → connect repo.
-3. Render auto-detects `render.yaml`.
-4. Set `ANTHROPIC_API_KEY` in the Render dashboard under **Environment**.
-
-### Frontend → Vercel
-
-1. Vercel → **New Project** → import repo.
-2. Set **Root Directory** to `frontend`.
-3. Vercel auto-detects Vite.
-4. Update the `/api` rewrite target in `vercel.json` to your Render URL.
 
 ---
 
@@ -248,7 +254,30 @@ pytest tests/test_api.py        # requires: pip install httpx pytest-asyncio
 | Transforms | `log_transform`, `sqrt_transform` |
 | No-op | `keep` |
 
+---
 
+## Running tests
+
+```bash
+make test                        # all tests
+pytest tests/test_pipeline.py    # ingestion + profiling
+pytest tests/test_decision_agent.py
+pytest tests/test_phase4.py      # execution + validation + graph routing
+pytest tests/test_output.py
+pytest tests/test_api.py         # requires pytest-asyncio
+```
+
+---
+
+## Sharing reports
+
+Every completed run generates a shareable URL:
+
+```
+https://your-app.vercel.app/report/{run_id}
+```
+
+Anyone with the link can view the full results dashboard — no login required. The run data lives on the Render backend for as long as the server's ephemeral storage persists (redeploy clears it; attach a persistent disk on Render for durability).
 
 ## License
 

@@ -115,6 +115,7 @@ class RunRequest(BaseModel):
     mode: str       = Field(default="rules", description="'llm' or 'rules'")
     max_iterations: int   = Field(default=3, ge=1, le=5)
     quality_threshold: float = Field(default=0.90, ge=0.0, le=1.0)
+    column_overrides: dict = Field(default={}, description="User overrides: {col: action} e.g. {'Age': 'drop_column'}")
 
 
 class UploadResponse(BaseModel):
@@ -189,6 +190,7 @@ async def _stream_pipeline(
             "quality_history": [],
             "api_key": request.api_key,
             "mode": request.mode if request.api_key else "rules",
+            "column_overrides": request.column_overrides,
             "output_paths": None,
             "explainability": None,
         }
@@ -196,10 +198,6 @@ async def _stream_pipeline(
         # Emit a progress event for each pipeline stage as it completes.
         # LangGraph's stream() yields (node_name, output_state) tuples.
         final_state: PipelineState | None = None
-
-        def run_stream():
-            """Blocking generator — executed in thread pool."""
-            return list(pipeline.stream(initial_state))
 
         node_label = {
             "ingestion":  "Ingesting and validating data…",
@@ -210,16 +208,28 @@ async def _stream_pipeline(
             "output":     "Writing artefacts…",
         }
 
-        stream_results = await loop.run_in_executor(_executor, run_stream)
+        def run_stream():
+            """
+            Stream the pipeline, accumulating ALL node outputs into one state dict.
+            LangGraph 0.1.x yields {node_name: partial_output} per node —
+            we merge every partial into final_state so no keys are lost.
+            Returns (node_names_in_order, accumulated_state).
+            """
+            accumulated = dict(initial_state)  # start with full initial state
+            node_names = []
+            for chunk in pipeline.stream(initial_state):
+                if isinstance(chunk, dict):
+                    for node_name, node_output in chunk.items():
+                        node_names.append(node_name)
+                        if isinstance(node_output, dict):
+                            accumulated.update(node_output)
+            return node_names, accumulated
 
-        for node_name, node_output in stream_results:
+        node_names, final_state = await loop.run_in_executor(_executor, run_stream)
+
+        for node_name in node_names:
             label = node_label.get(node_name, node_name)
             yield _sse("progress", {"node": node_name, "label": label})
-            # Keep track of the latest state
-            if isinstance(node_output, dict):
-                if final_state is None:
-                    final_state = {}
-                final_state.update(node_output)
 
         if final_state is None or not final_state.get("output_paths"):
             yield _sse("error", {"detail": "Pipeline completed but produced no output."})
@@ -348,6 +358,19 @@ async def download_artefact(run_id: str, file_type: str) -> FileResponse:
             raise HTTPException(status_code=404, detail="CSV artefact not found.")
         file_path = matches[0]
         media_type = "text/csv"
+    elif file_type == "csv-dedup":
+        matches = list(run_dir.glob("cleaned_*.csv"))
+        if not matches:
+            raise HTTPException(status_code=404, detail="CSV artefact not found.")
+        import tempfile
+        df_dd = pd.read_csv(matches[0])
+        before = len(df_dd)
+        df_dd = df_dd.drop_duplicates()
+        tmp = tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode='w')
+        df_dd.to_csv(tmp.name, index=False)
+        tmp.close()
+        logger.info("Dedup download: %d → %d rows", before, len(df_dd))
+        return FileResponse(path=tmp.name, media_type="text/csv", filename=f"deduped_{matches[0].name}")
     elif file_type == "report":
         file_path = run_dir / "audit_report.md"
         if not file_path.exists():
@@ -363,6 +386,133 @@ async def download_artefact(run_id: str, file_type: str) -> FileResponse:
         path=str(file_path),
         media_type=media_type,
         filename=file_path.name,
+    )
+
+
+@app.post("/api/summary/{run_id}", summary="Generate AI narrative summary for a run")
+async def generate_summary(run_id: str, body: dict = None) -> dict:
+    """
+    Use Gemini to generate a plain-English dataset summary paragraph.
+    Requires api_key in request body: {"api_key": "AIza..."}
+    Falls back to a rule-based summary if no key is provided.
+    """
+    json_path = _OUTPUT_ROOT / run_id / "explainability.json"
+    if not json_path.exists():
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found.")
+
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    api_key = (body or {}).get("api_key", "")
+
+    profiles = data.get("column_profiles", [])
+    plan     = data.get("cleaning_plan", [])
+    score    = data.get("final_score", {})
+    shape_b  = data.get("shape_before", [0, 0])
+    shape_a  = data.get("shape_after", [0, 0])
+    filename = data.get("filename", "dataset")
+    iters    = data.get("iterations_completed", 1)
+
+    # Build a compact context string for the LLM
+    high_missing = [p["column"] for p in profiles if (p.get("missing_pct") or 0) > 0.2]
+    high_skew    = [p["column"] for p in profiles if (p.get("skewness") or 0) and abs(p["skewness"]) > 1.5]
+    high_outlier = [p["column"] for p in profiles if (p.get("outlier_ratio") or 0) > 0.05]
+    numeric_cols = [p["column"] for p in profiles if p.get("skewness") is not None]
+    cat_cols     = [p["column"] for p in profiles if p.get("skewness") is None]
+    actions      = {}
+    for s in plan:
+        actions.setdefault(s["action"], []).append(s["column"])
+
+    # Rule-based fallback summary (always computed)
+    fallback = (
+        f"{filename} has {shape_b[0]:,} rows and {shape_b[1]} columns "
+        f"({len(numeric_cols)} numeric, {len(cat_cols)} categorical). "
+        f"After {iters} cleaning iteration(s), the overall data quality score reached "
+        f"{round(score.get('overall', 0) * 100)}% "
+        f"(missing: {round(score.get('missing_score', 0) * 100)}%, "
+        f"outlier: {round(score.get('outlier_score', 0) * 100)}%, "
+        f"skewness: {round(score.get('skewness_score', 0) * 100)}%). "
+    )
+    if high_missing:
+        fallback += f"Columns with significant missing data: {', '.join(high_missing[:4])}. "
+    if high_skew:
+        fallback += f"Right-skewed distributions corrected: {', '.join(high_skew[:4])}. "
+    if "drop_column" in actions:
+        fallback += f"Dropped entirely-null columns: {', '.join(actions['drop_column'])}. "
+    fallback += f"The cleaned dataset has {shape_a[0]:,} rows and {shape_a[1]} columns, ready for ML."
+
+    if not api_key:
+        return {"summary": fallback, "source": "rules"}
+
+    # LLM-based summary
+    try:
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        from langchain_core.messages import SystemMessage, HumanMessage
+
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-2.0-flash",
+            google_api_key=api_key,
+            temperature=0.3,
+            max_output_tokens=300,
+        )
+
+        system = (
+            "You are a senior data scientist writing a brief, plain-English summary of a dataset "
+            "cleaning run for a non-technical stakeholder. Write exactly 3-4 sentences. "
+            "Be specific — mention column names, percentages, and what was done. "
+            "Do NOT use bullet points or headers. Output only the paragraph, nothing else."
+        )
+
+        numeric_str  = ", ".join(numeric_cols[:8]) or "none"
+        cat_str      = ", ".join(cat_cols[:8]) or "none"
+        missing_str  = ", ".join(high_missing) or "none"
+        skew_str     = ", ".join(high_skew) or "none"
+        outlier_str  = ", ".join(high_outlier) or "none"
+        actions_str  = str({k: v for k, v in list(actions.items())[:6]})
+        score_str    = (
+            f"{round(score.get('overall', 0) * 100)}% "
+            f"(missing {round(score.get('missing_score', 0)*100)}%, "
+            f"outlier {round(score.get('outlier_score', 0)*100)}%, "
+            f"skewness {round(score.get('skewness_score', 0)*100)}%)"
+        )
+        user = (
+            f"Dataset: {filename}\n"
+            f"Shape: {shape_b[0]} rows x {shape_b[1]} cols -> {shape_a[0]} rows x {shape_a[1]} cols\n"
+            f"Numeric columns: {numeric_str}\n"
+            f"Categorical columns: {cat_str}\n"
+            f"High missing (>20%): {missing_str}\n"
+            f"High skew (>1.5): {skew_str}\n"
+            f"High outliers (>5%): {outlier_str}\n"
+            f"Actions taken: {actions_str}\n"
+            f"Final quality score: {score_str}\n"
+            f"Iterations: {iters}\n\n"
+            "Write 3-4 sentences summarising what this dataset is, "
+            "what quality issues were found, and what was fixed."
+        )
+
+        response = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
+        return {"summary": response.content.strip(), "source": "llm"}
+
+    except Exception as exc:
+        logger.warning("AI summary failed (%s) — falling back to rules.", exc)
+        return {"summary": fallback, "source": "rules"}
+
+
+@app.get("/api/download/{run_id}/parquet", summary="Download cleaned data as Parquet")
+async def download_parquet(run_id: str):
+    run_dir = _OUTPUT_ROOT / run_id
+    matches = list(run_dir.glob("cleaned_*.csv"))
+    if not matches:
+        raise HTTPException(status_code=404, detail="CSV artefact not found.")
+    df = pd.read_csv(matches[0])
+    import io as _io
+    buf = _io.BytesIO()
+    df.to_parquet(buf, index=False)
+    buf.seek(0)
+    from fastapi.responses import Response
+    stem = matches[0].stem
+    return Response(
+        content=buf.read(),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f"attachment; filename={stem}.parquet"}
     )
 
 

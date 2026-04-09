@@ -50,7 +50,7 @@ def _try_datetime_coercion(series: pd.Series) -> pd.Series:
         return series
 
     try:
-        coerced = pd.to_datetime(series, infer_datetime_format=True, errors="coerce")
+        coerced = pd.to_datetime(series, errors="coerce")
         original_nulls = series.isna().sum()
         new_nulls = coerced.isna().sum()
         if new_nulls == original_nulls:

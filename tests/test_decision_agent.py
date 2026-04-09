@@ -354,9 +354,9 @@ class TestRunDecisionLLM:
         mock_llm = MagicMock()
         mock_llm.invoke.return_value = self._mock_response(llm_plan)
 
-        with patch("agents.decision_agent.ChatAnthropic", return_value=mock_llm):
-            with patch("agents.decision_agent.SystemMessage", side_effect=lambda **kw: kw):
-                with patch("agents.decision_agent.HumanMessage", side_effect=lambda **kw: kw):
+        with patch("langchain_google_genai.ChatGoogleGenerativeAI", return_value=mock_llm):
+            with patch("langchain_core.messages.SystemMessage", side_effect=lambda **kw: kw):
+                with patch("langchain_core.messages.HumanMessage", side_effect=lambda **kw: kw):
                     result = run_decision(_state(profiles, mode="llm", api_key="sk-real"))
 
         assert result["cleaning_plan"][0]["action"] == "impute_median"
@@ -374,9 +374,9 @@ class TestRunDecisionLLM:
         mock_llm = MagicMock()
         mock_llm.invoke.side_effect = RuntimeError("API timeout")
 
-        with patch("agents.decision_agent.ChatAnthropic", return_value=mock_llm):
-            with patch("agents.decision_agent.SystemMessage", side_effect=lambda **kw: kw):
-                with patch("agents.decision_agent.HumanMessage", side_effect=lambda **kw: kw):
+        with patch("langchain_google_genai.ChatGoogleGenerativeAI", return_value=mock_llm):
+            with patch("langchain_core.messages.SystemMessage", side_effect=lambda **kw: kw):
+                with patch("langchain_core.messages.HumanMessage", side_effect=lambda **kw: kw):
                     result = run_decision(_state(profiles, mode="llm", api_key="sk-real"))
 
         entry = next(e for e in result["audit_log"] if e["step"] == "decision")
@@ -394,9 +394,9 @@ class TestRunDecisionLLM:
         mock_llm = MagicMock()
         mock_llm.invoke.return_value = MagicMock(content=fenced_response)
 
-        with patch("agents.decision_agent.ChatAnthropic", return_value=mock_llm):
-            with patch("agents.decision_agent.SystemMessage", side_effect=lambda **kw: kw):
-                with patch("agents.decision_agent.HumanMessage", side_effect=lambda **kw: kw):
+        with patch("langchain_google_genai.ChatGoogleGenerativeAI", return_value=mock_llm):
+            with patch("langchain_core.messages.SystemMessage", side_effect=lambda **kw: kw):
+                with patch("langchain_core.messages.HumanMessage", side_effect=lambda **kw: kw):
                     result = run_decision(_state(profiles, mode="llm", api_key="sk-real"))
 
         assert result["cleaning_plan"][0]["action"] == "keep"
@@ -420,9 +420,9 @@ class TestRunDecisionLLM:
         mock_llm = MagicMock()
         mock_llm.invoke.side_effect = capture_invoke
 
-        with patch("agents.decision_agent.ChatAnthropic", return_value=mock_llm):
-            with patch("agents.decision_agent.SystemMessage", side_effect=lambda **kw: kw):
-                with patch("agents.decision_agent.HumanMessage", side_effect=lambda **kw: kw):
+        with patch("langchain_google_genai.ChatGoogleGenerativeAI", return_value=mock_llm):
+            with patch("langchain_core.messages.SystemMessage", side_effect=lambda **kw: kw):
+                with patch("langchain_core.messages.HumanMessage", side_effect=lambda **kw: kw):
                     run_decision(_state(
                         profiles, mode="llm", api_key="sk-real",
                         iteration=1, cleaning_plan=prior_plan,

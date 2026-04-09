@@ -81,5 +81,7 @@ class PipelineState(TypedDict, total=False):
     mode: str                    # "llm" | "rules"
 
     # Output agent artefacts (written by run_output)
+    column_overrides: dict          # user-specified overrides {col: action}
+    column_overrides: dict          # user-specified {col: action} overrides
     output_paths: Optional[dict]   # {csv, report, explainability, run_id, out_dir}
     explainability: Optional[dict] # full payload for the frontend

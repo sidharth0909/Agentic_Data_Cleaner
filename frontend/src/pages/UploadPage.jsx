@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react'
 import { uploadCSV, runPipeline } from '../api/client.js'
 
-export default function UploadPage({ onComplete }) {
+export default function UploadPage({ onComplete, onHistory }) {
   const [file, setFile] = useState(null)
   const [apiKey, setApiKey] = useState('')
   const [mode, setMode] = useState('rules')
@@ -10,6 +10,9 @@ export default function UploadPage({ onComplete }) {
   const [running, setRunning] = useState(false)
   const [dragOver, setDragOver] = useState(false)
   const [error, setError] = useState('')
+  const [step, setStep] = useState('upload') // upload | rules
+  const [uploadData, setUploadData] = useState(null) // {session_id, column_names}
+  const [overrides, setOverrides] = useState({}) // {col: action}
   const inputRef = useRef()
 
   const handleFile = (f) => {
@@ -22,23 +25,36 @@ export default function UploadPage({ onComplete }) {
     setFile(f)
   }
 
-  const handleRun = async () => {
+  const handleUploadAndReview = async () => {
     if (!file) { setError('Please select a CSV file first'); return }
+    setRunning(true); setError(''); setStatus('Uploading file…')
+    try {
+      const { data: upload } = await uploadCSV(file)
+      setUploadData(upload)
+      setStep('rules')
+    } catch (err) {
+      setError(err.message || 'Upload failed')
+    } finally { setRunning(false) }
+  }
+
+  const handleRun = async () => {
+    if (!uploadData) return
     if (mode === 'llm' && !apiKey.trim()) { setError('Please enter your Gemini API key'); return }
 
     setRunning(true)
     setError('')
     setProgress([])
-    setStatus('Uploading file…')
+    setStatus('Pipeline running…')
 
     try {
-      const { data: upload } = await uploadCSV(file)
+      const upload = uploadData
       setStatus('Pipeline running…')
 
-      const results = await runPipeline(
+      const runResult = await runPipeline(
         upload.session_id,
         apiKey.trim(),
         apiKey.trim() ? mode : 'rules',
+        overrides,
         (event, data) => {
           if (event === 'started') setStatus('Pipeline started…')
           if (event === 'progress') {
@@ -48,7 +64,19 @@ export default function UploadPage({ onComplete }) {
         }
       )
 
-      onComplete(results)
+      // Fetch the full explainability payload for the results page
+      setStatus('Loading results…')
+      const explainRes = await fetch(runResult.explainability_url)
+      if (!explainRes.ok) throw new Error('Could not load results data')
+      const explainData = await explainRes.json()
+
+      // Merge run metadata + explainability into one results object
+      onComplete({
+        ...explainData,
+        csv_download_url: runResult.csv_download_url,
+        report_download_url: runResult.report_download_url,
+        _api_key: apiKey.trim(),
+      })
     } catch (err) {
       setError(err.message || 'Something went wrong')
       setStatus('')
@@ -60,7 +88,10 @@ export default function UploadPage({ onComplete }) {
   return (
     <div style={s.page}>
       <div style={s.card}>
-        <h1 style={s.title}>🧹 Agentic Data Cleaner</h1>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+          <h1 style={{...s.title,margin:0}}>🧹 Agentic Data Cleaner</h1>
+          {onHistory && <button onClick={onHistory} style={{fontSize:11,padding:"4px 10px",borderRadius:6,border:"0.5px solid #d3d1c7",background:"#fff",cursor:"pointer",color:"#6b7280"}}>History</button>}
+        </div>
         <p style={s.subtitle}>
           Upload a messy CSV. A multi-agent AI pipeline cleans it with per-column rationale.
         </p>
@@ -135,6 +166,42 @@ export default function UploadPage({ onComplete }) {
           </div>
         )}
 
+        {/* ── Rules editor (shown after upload) ── */}
+        {step === 'rules' && uploadData?.column_names && (
+          <div style={{marginBottom:16}}>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
+              <label style={s.label}>Review agent decisions</label>
+              <button onClick={() => setStep('upload')} style={{fontSize:11,color:'#6b7280',background:'none',border:'none',cursor:'pointer'}}>← change file</button>
+            </div>
+            <div style={{background:'#f8fafc',border:'0.5px solid #e2e8f0',borderRadius:8,padding:'10px 12px',maxHeight:220,overflowY:'auto'}}>
+              {uploadData.column_names.map(col => (
+                <div key={col} style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+                  <span style={{fontSize:12,fontWeight:500,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{col}</span>
+                  <select
+                    value={overrides[col] || ''}
+                    onChange={e => setOverrides(prev => e.target.value ? {...prev,[col]:e.target.value} : Object.fromEntries(Object.entries(prev).filter(([k])=>k!==col)))}
+                    style={{fontSize:11,padding:'3px 6px',borderRadius:5,border:'0.5px solid #d3d1c7',background:'#fff',color: overrides[col] ? '#2563eb' : '#9a9a94'}}
+                  >
+                    <option value=''>agent decides</option>
+                    <option value='keep'>keep as-is</option>
+                    <option value='drop_column'>drop column</option>
+                    <option value='impute_median'>impute median</option>
+                    <option value='impute_mode'>impute mode</option>
+                    <option value='scale_standard'>standardise</option>
+                    <option value='scale_robust'>robust scale</option>
+                    <option value='log_transform'>log transform</option>
+                    <option value='encode_onehot'>one-hot encode</option>
+                    <option value='clip_iqr'>clip IQR</option>
+                  </select>
+                </div>
+              ))}
+            </div>
+            {Object.keys(overrides).length > 0 && (
+              <div style={{marginTop:6,fontSize:11,color:'#2563eb'}}>{Object.keys(overrides).length} override(s) set — agent will respect these</div>
+            )}
+          </div>
+        )}
+
         {/* ── Error banner ── */}
         {error && (
           <div style={s.errorBanner}>
@@ -145,13 +212,13 @@ export default function UploadPage({ onComplete }) {
         {/* ── Run button ── */}
         <button
           style={{ ...s.btn, ...(running ? s.btnRunning : {}) }}
-          onClick={handleRun}
+          onClick={step === 'upload' ? handleUploadAndReview : handleRun}
           disabled={running}
         >
           {running ? (
             <span>⏳ {status || 'Running…'}</span>
           ) : (
-            '▶  Clean Data'
+            step === 'upload' ? '▶  Review & Clean' : '▶  Clean Data'
           )}
         </button>
 

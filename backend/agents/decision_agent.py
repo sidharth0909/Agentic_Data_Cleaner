@@ -317,7 +317,7 @@ def _build_user_prompt(
         json.dumps(safe_profiles, indent=2, default=str),
     ]
 
-    if previous_plan and iteration > 1:
+    if previous_plan and iteration >= 1:
         prompt_parts += [
             "",
             "Previous cleaning plan (iteration already executed):",
@@ -355,7 +355,7 @@ def _call_llm(
         ) from exc
 
     llm = ChatGoogleGenerativeAI(
-        model="gemini-1.5-pro",
+        model="gemini-2.0-flash",
         google_api_key=api_key,
         temperature=0,          # deterministic — we want consistent plans
         max_output_tokens=4096,
@@ -513,6 +513,19 @@ def run_decision(state: PipelineState) -> dict[str, Any]:
         logger.exception("Decision agent failed.")
         audit_log.append(entry)
         raise
+
+    # Apply user overrides — these take priority over agent decisions
+    overrides: dict = state.get("column_overrides") or {}
+    if overrides:
+        plan_by_col = {s["column"]: s for s in plan}
+        for col, action in overrides.items():
+            if col in plan_by_col and action in VALID_ACTIONS:
+                plan_by_col[col]["action"] = action
+                plan_by_col[col]["rationale"] = f"User override: {action} (manually specified)."
+                plan_by_col[col]["params"] = {}
+                logger.info("Override applied: %s → %s", col, action)
+        plan = list(plan_by_col.values())
+        entry["overrides_applied"] = {k: v for k, v in overrides.items() if k in plan_by_col}
 
     audit_log.append(entry)
     return {

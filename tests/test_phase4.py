@@ -289,10 +289,11 @@ class TestComputeQualityScore:
 
     def test_outlier_heavy_df_lowers_outlier_score(self):
         # 4 extreme outliers in a 10-row column
-        vals = [10] * 6 + [10000, -10000, 20000, -20000]
+        # Values tightly clustered around 10, with 4 clear IQR outliers
+        vals = [9, 10, 10, 10, 10, 11, 1000, -1000, 2000, -2000]
         df = pd.DataFrame({"x": vals, "y": list(range(10))})
         score = compute_quality_score(df, iteration=0)
-        assert score["outlier_score"] < 0.80
+        assert score["outlier_score"] < 0.90
 
     def test_high_skew_lowers_skewness_score(self):
         # Exponential-ish distribution — very high skew

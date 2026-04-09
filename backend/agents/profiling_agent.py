@@ -119,18 +119,54 @@ def _cardinality_hint(series: pd.Series, unique_count: int) -> str:
 # ---------------------------------------------------------------------------
 
 def _numeric_summary(series: pd.Series) -> dict[str, float | None] | None:
-    """Mean, std, min, max for numeric columns. Returns None otherwise."""
+    """Mean, std, min, max, median, q1, q3 for numeric columns."""
     if not pd.api.types.is_numeric_dtype(series):
         return None
     non_null = series.dropna()
     if len(non_null) == 0:
-        return {"mean": None, "std": None, "min": None, "max": None}
+        return {"mean": None, "std": None, "min": None, "max": None,
+                "median": None, "q1": None, "q3": None}
     return {
-        "mean": round(float(non_null.mean()), 4),
-        "std": round(float(non_null.std()), 4),
-        "min": round(float(non_null.min()), 4),
-        "max": round(float(non_null.max()), 4),
+        "mean":   round(float(non_null.mean()), 4),
+        "std":    round(float(non_null.std()), 4),
+        "min":    round(float(non_null.min()), 4),
+        "max":    round(float(non_null.max()), 4),
+        "median": round(float(non_null.median()), 4),
+        "q1":     round(float(non_null.quantile(0.25)), 4),
+        "q3":     round(float(non_null.quantile(0.75)), 4),
     }
+
+
+def _histogram_bins(series: pd.Series, n_bins: int = 15) -> dict | None:
+    """Compute histogram bin counts for numeric columns."""
+    if not pd.api.types.is_numeric_dtype(series):
+        return None
+    non_null = series.dropna()
+    if len(non_null) < 2:
+        return None
+    try:
+        counts, edges = np.histogram(non_null, bins=n_bins)
+        return {
+            "counts": [int(c) for c in counts],
+            "edges":  [round(float(e), 6) for e in edges],
+        }
+    except Exception:
+        return None
+
+
+def _value_counts(series: pd.Series, top_n: int = 10) -> list[dict] | None:
+    """Top-N value frequencies for categorical columns."""
+    if pd.api.types.is_numeric_dtype(series):
+        return None
+    non_null = series.dropna()
+    if len(non_null) == 0:
+        return None
+    vc = non_null.value_counts().head(top_n)
+    total = len(non_null)
+    return [
+        {"value": str(v), "count": int(c), "pct": round(c / total, 4)}
+        for v, c in vc.items()
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +187,8 @@ def _profile_column(col_name: str, series: pd.Series) -> ColumnProfile:
         "outlier_ratio": _outlier_ratio(series),
         "sample_values": _sample_values(series),
         "numeric_summary": _numeric_summary(series),
+        "histogram": _histogram_bins(series),
+        "value_counts": _value_counts(series),
     }
     return profile
 

@@ -18,7 +18,7 @@ export const downloadFile = (runId, type) =>
  * onEvent(eventName, data) is called for every event.
  * Resolves with the "done" payload, or rejects with an Error.
  */
-export const runPipeline = (sessionId, apiKey, mode, onEvent) => {
+export const runPipeline = (sessionId, apiKey, mode, overrides, onEvent) => {
   return new Promise(async (resolve, reject) => {
     let response
     try {
@@ -31,6 +31,7 @@ export const runPipeline = (sessionId, apiKey, mode, onEvent) => {
           mode,
           max_iterations: 3,
           quality_threshold: 0.90,
+          column_overrides: overrides || {},
         }),
       })
     } catch (err) {
