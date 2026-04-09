@@ -248,17 +248,7 @@ pytest tests/test_api.py        # requires: pip install httpx pytest-asyncio
 | Transforms | `log_transform`, `sqrt_transform` |
 | No-op | `keep` |
 
----
 
-## Resume bullet
-
-> "Built and deployed a full-stack AI application — React frontend, FastAPI backend —
-> using LangGraph to orchestrate a multi-agent data cleaning pipeline where a Decision
-> Agent (Claude) reasons context-aware transformations with per-column rationale,
-> a Validation Agent drives iterative quality improvement, reducing missing values by
-> up to 100% and outlier ratio by ~60% across benchmark datasets."
-
----
 
 ## License
 
